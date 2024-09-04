@@ -24,148 +24,177 @@
  License: MIT License (https://opensource.org/licenses/MIT)
 */
 
-#include <MX1508.h>
+#include <MX1508.h>           // Include MX1508 motor driver library
+#include <RunningAverage.h>   // Include RunningAverage library for smoother sound detection
 
-MX1508 bodyMotor(6, 9); // Sets up an MX1508 controlled motor on PWM pins 6 and 9
-MX1508 mouthMotor(5, 3); // Sets up an MX1508 controlled motor on PWM pins 5 and 3
+// Initialize motors for the body, mouth, and tail with respective control pins
+MX1508 bodyMotor(6, 9);       // Body rotation motor
+MX1508 mouthMotor(5, 3);      // Mouth motor
+MX1508 tailMotor(10, 11);     // New tail motor
 
-int soundPin = A0; // Sound input
+// Sound input and control variables
+int soundPin = A0;            // Analog pin for sound input
+int silence = 12;             // Threshold value to determine "silence"
+int bodySpeed = 0;            // Speed of body movement
+int soundVolume = 0;          // Measured sound volume
+int fishState = 0;            // Current state of the fish animation
 
-int silence = 12; // Threshold for "silence". Anything below this level is ignored.
-int bodySpeed = 0; // body motor speed initialized to 0
-int soundVolume = 0; // variable to hold the analog audio value
-int fishState = 0; // variable to indicate the state Billy is in
+bool talking = false;         // Flag to indicate if the fish is talking
 
-bool talking = false; //indicates whether the fish should be talking or not
+// Timing variables to control actions
+long currentTime;             // Current time in milliseconds
+long mouthActionTime;         // Next time to perform mouth action
+long bodyActionTime;          // Next time to perform body action
+long tailActionTime;          // Next time to perform tail action
+long lastActionTime;          // Last time any action was performed
 
-//these variables are for storing the current time, scheduling times for actions to end, and when the action took place
-long currentTime;
-long mouthActionTime;
-long bodyActionTime;
-long lastActionTime;
+// Variables for improved vocal detection
+RunningAverage vocalsRA(10);  // Running average of the last 10 sound samples
+float vocalThreshold = 1.5;   // Threshold multiplier for detecting vocals
 
 void setup() {
-//make sure both motor speeds are set to zero
-  bodyMotor.setSpeed(0); 
+  // Initialize motor speeds to 0 (stop)
+  bodyMotor.setSpeed(0);
   mouthMotor.setSpeed(0);
-
-//input mode for sound pin
-  pinMode(soundPin, INPUT);
-
-  Serial.begin(9600);
+  tailMotor.setSpeed(0);  // Initialize the tail motor
+  
+  pinMode(soundPin, INPUT);  // Set the sound pin as input
+  
+  Serial.begin(9600);  // Start serial communication for debugging
 }
 
 void loop() {
-  currentTime = millis(); //updates the time each time the loop is run
-  updateSoundInput(); //updates the volume level detected
-  SMBillyBass(); //this is the switch/case statement to control the state of the fish
+  currentTime = millis();  // Get the current time
+  updateSoundInput();      // Update the sound input reading
+  SMBillyBass();           // Run the state machine for Billy Bass animation
 }
 
 void SMBillyBass() {
+  // State machine to control Billy Bass behavior
   switch (fishState) {
-    case 0: //START & WAITING
-      if (soundVolume > silence) { //if we detect audio input above the threshold
-        if (currentTime > mouthActionTime) { //and if we haven't yet scheduled a mouth movement
-          talking = true; //  set talking to true and schedule the mouth movement action
-          mouthActionTime = currentTime + 100;
-          fishState = 1; // jump to a talking state
+    case 0:  // START & WAITING state
+      if (detectVocals()) {  // Check if vocals are detected
+        if (currentTime > mouthActionTime) {
+          talking = true;                   // Set talking flag to true
+          mouthActionTime = currentTime + 100; // Set the next mouth action time
+          fishState = 1;                    // Switch to TALKING state
         }
-      } else if (currentTime > mouthActionTime + 100) { //if we're beyond the scheduled talking time, halt the motors
-        bodyMotor.halt();
-        mouthMotor.halt();
+      } else if (currentTime > mouthActionTime + 100) {
+        haltAllMotors();                   // Stop all motors if no vocals detected
       }
-      if (currentTime - lastActionTime > 1500) { //if Billy hasn't done anything in a while, we need to show he's bored
-        lastActionTime = currentTime + floor(random(30, 60)) * 1000L; //you can adjust the numbers here to change how often he flaps
-        fishState = 2; //jump to a flapping state!
+      if (currentTime - lastActionTime > 1500) {  // Random idle animation trigger
+        lastActionTime = currentTime + random(30000, 60000);  // Set next random idle time
+        fishState = 2;  // Switch to GOTTA FLAP! state
       }
       break;
 
-    case 1: //TALKING
-      if (currentTime < mouthActionTime) { //if we have a scheduled mouthActionTime in the future....
-        if (talking) { // and if we think we should be talking
-          openMouth(); // then open the mouth and articulate the body
-          lastActionTime = currentTime;
-          articulateBody(true);
+    case 1:  // TALKING state
+      if (currentTime < mouthActionTime) {  // Check if it's time to keep the mouth open
+        if (talking) {
+          openMouth();               // Open the mouth
+          lastActionTime = currentTime;  // Update last action time
+          articulateBody(true);      // Move body if talking
+          articulateTail(true);      // Move tail if talking
         }
-      }
-      else { // otherwise, close the mouth, don't articulate the body, and set talking to false
-        closeMouth();
-        articulateBody(false);
-        talking = false;
-        fishState = 0; //jump back to waiting state
+      } else {
+        closeMouth();                // Close the mouth
+        articulateBody(false);       // Stop body movement
+        articulateTail(false);       // Stop tail movement
+        talking = false;             // Reset talking flag
+        fishState = 0;               // Switch back to START & WAITING state
       }
       break;
 
-    case 2: //GOTTA FLAP!
-      //Serial.println("I'm bored. Gotta flap.");
-      flap();
-      fishState = 0;
+    case 2:  // GOTTA FLAP! state
+      flap();       // Perform flap action
+      fishState = 0;  // Return to START & WAITING state
       break;
   }
 }
 
-int updateSoundInput() {
-  soundVolume = analogRead(soundPin);
+void updateSoundInput() {
+  soundVolume = analogRead(soundPin);  // Read sound volume from sensor
+  vocalsRA.addValue(soundVolume);      // Add the reading to running average
+}
+
+bool detectVocals() {
+  // Detect if the current sound volume indicates vocal input
+  float average = vocalsRA.getAverage();   // Get average of recent sound samples
+  float currentValue = soundVolume;        // Current sound volume
+  return (currentValue > silence && currentValue > average * vocalThreshold);  // Compare with threshold
 }
 
 void openMouth() {
-  mouthMotor.halt(); //stop the mouth motor
-  mouthMotor.setSpeed(220); //set the mouth motor speed
-  mouthMotor.forward(); //open the mouth
+  mouthMotor.setSpeed(220);  // Set speed for mouth motor
+  mouthMotor.forward();      // Move mouth motor forward (open mouth)
 }
 
 void closeMouth() {
-  mouthMotor.halt(); //stop the mouth motor
-  mouthMotor.setSpeed(180); //set the mouth motor speed
-  mouthMotor.backward(); // close the mouth
+  mouthMotor.setSpeed(180);  // Set speed for mouth motor
+  mouthMotor.backward();     // Move mouth motor backward (close mouth)
 }
 
-void articulateBody(bool talking) { //function for articulating the body
-  if (talking) { //if Billy is talking
-    if (currentTime > bodyActionTime) { // and if we don't have a scheduled body movement
-      int r = floor(random(0, 8)); // create a random number between 0 and 7)
+void articulateBody(bool talking) {
+  // Control body movement based on talking state
+  if (talking) {
+    if (currentTime > bodyActionTime) {  // Time to update body movement
+      int r = random(8);  // Randomize body movement speed and direction
       if (r < 1) {
-        bodySpeed = 0; // don't move the body
-        bodyActionTime = currentTime + floor(random(500, 1000)); //schedule body action for .5 to 1 seconds from current time
-        bodyMotor.forward(); //move the body motor to raise the head
-
+        bodySpeed = 0;    // Stop body
       } else if (r < 3) {
-        bodySpeed = 150; //move the body slowly
-        bodyActionTime = currentTime + floor(random(500, 1000)); //schedule body action for .5 to 1 seconds from current time
-        bodyMotor.forward(); //move the body motor to raise the head
-
+        bodySpeed = 150;  // Set moderate speed
       } else if (r == 4) {
-        bodySpeed = 200;  // move the body medium speed
-        bodyActionTime = currentTime + floor(random(500, 1000)); //schedule body action for .5 to 1 seconds from current time
-        bodyMotor.forward(); //move the body motor to raise the head
-
-      } else if ( r == 5 ) {
-        bodySpeed = 0; //set body motor speed to 0
-        bodyMotor.halt(); //stop the body motor (to keep from violent sudden direction changes)
-        bodyMotor.setSpeed(255); //set the body motor to full speed
-        bodyMotor.backward(); //move the body motor to raise the tail
-        bodyActionTime = currentTime + floor(random(900, 1200)); //schedule body action for .9 to 1.2 seconds from current time
+        bodySpeed = 200;  // Set high speed
+      } else if (r == 5) {
+        bodySpeed = 255;  // Max speed, backward movement
+        bodyMotor.backward();
+      } else {
+        bodySpeed = 255;  // Max speed, forward movement
       }
-      else {
-        bodySpeed = 255; // move the body full speed
-        bodyMotor.forward(); //move the body motor to raise the head
-        bodyActionTime = currentTime + floor(random(1500, 3000)); //schedule action time for 1.5 to 3.0 seconds from current time
-      }
+      bodyActionTime = currentTime + random(500, 3000);  // Set next body action time
+      bodyMotor.setSpeed(bodySpeed);  // Update body motor speed
+      bodyMotor.forward();  // Move body motor forward
     }
-
-    bodyMotor.setSpeed(bodySpeed); //set the body motor speed
   } else {
-    if (currentTime > bodyActionTime) { //if we're beyond the scheduled body action time
-      bodyMotor.halt(); //stop the body motor
-      bodyActionTime = currentTime + floor(random(20, 50)); //set the next scheduled body action to current time plus .02 to .05 seconds
+    if (currentTime > bodyActionTime) {  // No talking, halt body
+      bodyMotor.halt();
+      bodyActionTime = currentTime + random(20, 50);  // Set short idle time
     }
   }
 }
 
+void articulateTail(bool talking) {
+  // Control tail movement based on talking state
+  if (talking) {
+    if (currentTime > tailActionTime) {  // Time to update tail movement
+      int r = random(5);                // Randomize tail speed
+      int tailSpeed = r * 50 + 5;       // Set tail speed between 5 and 255
+      tailMotor.setSpeed(tailSpeed);    // Update tail motor speed
+      tailMotor.forward();              // Move tail motor forward
+      tailActionTime = currentTime + random(300, 1000);  // Set next tail action time
+    }
+  } else {
+    if (currentTime > tailActionTime) {  // No talking, halt tail
+      tailMotor.halt();
+      tailActionTime = currentTime + random(20, 50);  // Set short idle time
+    }
+  }
+}
 
 void flap() {
-  bodyMotor.setSpeed(180); //set the body motor to full speed
-  bodyMotor.backward(); //move the body motor to raise the tail
-  delay(500); //wait a bit, for dramatic effect
-  bodyMotor.halt(); //halt the motor
+  // Function to perform a flapping motion
+  bodyMotor.setSpeed(180);  // Set speed for body motor
+  bodyMotor.backward();     // Move body backward (flap)
+  tailMotor.setSpeed(255);  // Set speed for tail motor
+  tailMotor.forward();      // Move tail forward (flap)
+  delay(500);               // Short delay for flap effect
+  haltAllMotors();          // Stop all motors after flapping
 }
+
+void haltAllMotors() {
+  // Function to halt all motors
+  bodyMotor.halt();
+  mouthMotor.halt();
+  tailMotor.halt();
+}
+
