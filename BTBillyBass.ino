@@ -1,200 +1,307 @@
-/*This is my crack at a state-based approach to automating a Big Mouth Billy Bass.
- This code was built on work done by both Donald Bell and github user jswett77. 
- See links below for more information on their previous work.
+#include <MX1508.h>
 
- In this code you'll find reference to the MX1508 library, which is a simple 
- library I wrote to interface with the extremely cheap 2-channel H-bridges that
- use the MX1508 driver chip. It may also work with other H-bridges that use different
- chips (such as the L298N), so long as you can PWM the inputs.
+// Declare motors for each part of the fish
+MX1508 bodyMotor(6, 9);   // Body motor on PWM pins 6 and 9
+MX1508 mouthMotor(5, 3);  // Mouth motor on PWM pins 5 and 3
+MX1508 headMotor(10, 11); // Head motor on PWM pins 10 and 11
 
- This code watches for a voltage increase on input A0, and when sound rises above a
- set threshold it opens the mouth of the fish. When the voltage falls below the threshold,
- the mouth closes.The result is the appearance of the mouth "riding the wave" of audio
- amplitude, and reacting to each voltage spike by opening again. There is also some code
- which adds body movements for a bit more personality while talking.
+// Sound input pins for left and right channels
+const int soundPinLeft = A0;
+const int soundPinRight = A1;
 
- Most of this work was based on the code written by jswett77, and can be found here:
- https://github.com/jswett77/big_mouth/blob/master/billy.ino
+// Threshold for "silence". Anything below this level is ignored.
+int silence = 12;
+int bodySpeed = 0; // Body motor speed initialized to 0
+int headSpeed = 0; // Head motor speed initialized to 0
+int soundVolumeLeft = 0;  // Variable to hold the left channel audio value
+int soundVolumeRight = 0; // Variable to hold the right channel audio value
+int soundVolume = 0;      // Combined audio value
+int fishState = 0;        // Variable to indicate the state Billy is in
 
- Donald Bell wrote the initial code for getting a Billy Bass to react to audio input,
- and his project can be found on Instructables here:
- https://www.instructables.com/id/Animate-a-Billy-Bass-Mouth-With-Any-Audio-Source/
+bool talking = false;     // Indicates whether the fish should be talking or not
+bool debugMode = false;   // Flag to indicate if debug mode is active
 
- Author: Jordan Bunker <jordan@hierotechnics.com> 2019
- License: MIT License (https://opensource.org/licenses/MIT)
-*/
-
-#include <MX1508.h>           // Include MX1508 motor driver library
-#include <RunningAverage.h>   // Include RunningAverage library for smoother sound detection
-
-// Initialize motors for the body, mouth, and tail with respective control pins
-MX1508 bodyMotor(6, 9);       // Body rotation motor
-MX1508 mouthMotor(5, 3);      // Mouth motor
-MX1508 tailMotor(10, 11);     // New tail motor
-
-// Sound input and control variables
-int soundPin = A0;            // Analog pin for sound input
-int silence = 12;             // Threshold value to determine "silence"
-int bodySpeed = 0;            // Speed of body movement
-int soundVolume = 0;          // Measured sound volume
-int fishState = 0;            // Current state of the fish animation
-
-bool talking = false;         // Flag to indicate if the fish is talking
-
-// Timing variables to control actions
-long currentTime;             // Current time in milliseconds
-long mouthActionTime;         // Next time to perform mouth action
-long bodyActionTime;          // Next time to perform body action
-long tailActionTime;          // Next time to perform tail action
-long lastActionTime;          // Last time any action was performed
-
-// Variables for improved vocal detection
-RunningAverage vocalsRA(10);  // Running average of the last 10 sound samples
-float vocalThreshold = 1.5;   // Threshold multiplier for detecting vocals
+// Variables for timing
+unsigned long currentTime;
+unsigned long mouthActionTime = 0;
+unsigned long bodyActionTime = 0;
+unsigned long headActionTime = 0;
+unsigned long nextFlapTime = 0;
 
 void setup() {
-  // Initialize motor speeds to 0 (stop)
+  // Make sure all motor speeds are set to zero
   bodyMotor.setSpeed(0);
   mouthMotor.setSpeed(0);
-  tailMotor.setSpeed(0);  // Initialize the tail motor
-  
-  pinMode(soundPin, INPUT);  // Set the sound pin as input
-  
-  Serial.begin(9600);  // Start serial communication for debugging
+  headMotor.setSpeed(0);
+
+  // Input mode for sound pins
+  pinMode(soundPinLeft, INPUT);
+  pinMode(soundPinRight, INPUT);
+
+  // Start Serial communication
+  Serial.begin(9600);
+
+  // Initialize nextFlapTime
+  nextFlapTime = millis() + random(30000, 60000); // Next flap in 30 to 60 seconds
+
+  // Print welcome message and instructions
+  Serial.println("Billy Bass Debug Mode");
+  Serial.println("Type 'debug' to enter debug mode.");
+  Serial.println("Type 'exit' to exit debug mode.");
 }
 
 void loop() {
-  currentTime = millis();  // Get the current time
-  updateSoundInput();      // Update the sound input reading
-  SMBillyBass();           // Run the state machine for Billy Bass animation
+  currentTime = millis(); // Update the time each time the loop is run
+
+  // Check for serial input
+  checkSerialInput();
+
+  if (debugMode) {
+    // In debug mode, handle motor testing
+    debugMenu();
+  } else {
+    updateSoundInput();     // Update the volume levels detected
+    SMBillyBass();          // State machine to control the fish
+  }
 }
 
 void SMBillyBass() {
-  // State machine to control Billy Bass behavior
   switch (fishState) {
-    case 0:  // START & WAITING state
-      if (detectVocals()) {  // Check if vocals are detected
-        if (currentTime > mouthActionTime) {
-          talking = true;                   // Set talking flag to true
-          mouthActionTime = currentTime + 100; // Set the next mouth action time
-          fishState = 1;                    // Switch to TALKING state
+    case 0: // START & WAITING
+      if (soundVolume > silence) { // If we detect audio input above the threshold
+        if (currentTime > mouthActionTime) { // And if we haven't yet scheduled a mouth movement
+          talking = true; // Set talking to true and schedule the mouth movement action
+          mouthActionTime = currentTime + 100;
+          fishState = 1; // Jump to the talking state
         }
-      } else if (currentTime > mouthActionTime + 100) {
-        haltAllMotors();                   // Stop all motors if no vocals detected
+      } else if (currentTime > mouthActionTime + 100) { // If we're beyond the scheduled talking time, halt the motors
+        bodyMotor.halt();
+        mouthMotor.halt();
+        headMotor.halt();
       }
-      if (currentTime - lastActionTime > 1500) {  // Random idle animation trigger
-        lastActionTime = currentTime + random(30000, 60000);  // Set next random idle time
-        fishState = 2;  // Switch to GOTTA FLAP! state
+      if (currentTime >= nextFlapTime) { // Time to flap
+        fishState = 2; // Jump to the flapping state
       }
       break;
 
-    case 1:  // TALKING state
-      if (currentTime < mouthActionTime) {  // Check if it's time to keep the mouth open
-        if (talking) {
-          openMouth();               // Open the mouth
-          lastActionTime = currentTime;  // Update last action time
-          articulateBody(true);      // Move body if talking
-          articulateTail(true);      // Move tail if talking
+    case 1: // TALKING
+      if (currentTime < mouthActionTime) { // If we have a scheduled mouthActionTime in the future
+        if (talking) { // And if we think we should be talking
+          openMouth(); // Open the mouth
+          articulateBody(true); // Move the body
+          moveHead(true);       // Move the head
         }
-      } else {
-        closeMouth();                // Close the mouth
-        articulateBody(false);       // Stop body movement
-        articulateTail(false);       // Stop tail movement
-        talking = false;             // Reset talking flag
-        fishState = 0;               // Switch back to START & WAITING state
+      } else { // Otherwise, close the mouth, don't articulate the body or head, and set talking to false
+        closeMouth();
+        articulateBody(false);
+        moveHead(false);
+        talking = false;
+        fishState = 0; // Jump back to waiting state
       }
       break;
 
-    case 2:  // GOTTA FLAP! state
-      flap();       // Perform flap action
-      fishState = 0;  // Return to START & WAITING state
+    case 2: // FLAPPING
+      flap();
+      nextFlapTime = currentTime + random(30000, 60000); // Schedule next flap in 30 to 60 seconds
+      fishState = 0; // Return to waiting state
       break;
   }
 }
 
 void updateSoundInput() {
-  soundVolume = analogRead(soundPin);  // Read sound volume from sensor
-  vocalsRA.addValue(soundVolume);      // Add the reading to running average
-}
+  // Read audio inputs from both left and right channels
+  soundVolumeLeft = analogRead(soundPinLeft);
+  soundVolumeRight = analogRead(soundPinRight);
 
-bool detectVocals() {
-  // Detect if the current sound volume indicates vocal input
-  float average = vocalsRA.getAverage();   // Get average of recent sound samples
-  float currentValue = soundVolume;        // Current sound volume
-  return (currentValue > silence && currentValue > average * vocalThreshold);  // Compare with threshold
+  // Combine the audio signals (you can adjust this logic as needed)
+  soundVolume = (soundVolumeLeft + soundVolumeRight) / 2;
+
+  // Print audio values to Serial Monitor for debugging
+  Serial.print("Left Channel: ");
+  Serial.print(soundVolumeLeft);
+  Serial.print(" | Right Channel: ");
+  Serial.print(soundVolumeRight);
+  Serial.print(" | Combined: ");
+  Serial.println(soundVolume);
 }
 
 void openMouth() {
-  mouthMotor.setSpeed(220);  // Set speed for mouth motor
-  mouthMotor.forward();      // Move mouth motor forward (open mouth)
+  mouthMotor.halt();      // Stop the mouth motor
+  mouthMotor.setSpeed(220); // Set the mouth motor speed
+  mouthMotor.forward();   // Open the mouth
 }
 
 void closeMouth() {
-  mouthMotor.setSpeed(180);  // Set speed for mouth motor
-  mouthMotor.backward();     // Move mouth motor backward (close mouth)
+  mouthMotor.halt();        // Stop the mouth motor
+  mouthMotor.setSpeed(180); // Set the mouth motor speed
+  mouthMotor.backward();    // Close the mouth
 }
 
 void articulateBody(bool talking) {
-  // Control body movement based on talking state
-  if (talking) {
-    if (currentTime > bodyActionTime) {  // Time to update body movement
-      int r = random(8);  // Randomize body movement speed and direction
+  if (talking) { // If Billy is talking
+    if (currentTime > bodyActionTime) { // And if we don't have a scheduled body movement
+      int r = random(0, 8); // Create a random number between 0 and 7
       if (r < 1) {
-        bodySpeed = 0;    // Stop body
+        bodySpeed = 0; // Don't move the body
+        bodyActionTime = currentTime + random(500, 1000); // Schedule body action
+        bodyMotor.forward(); // Move the body motor to raise the head
+
       } else if (r < 3) {
-        bodySpeed = 150;  // Set moderate speed
+        bodySpeed = 150; // Move the body slowly
+        bodyActionTime = currentTime + random(500, 1000); // Schedule body action
+        bodyMotor.forward(); // Move the body motor to raise the head
+
       } else if (r == 4) {
-        bodySpeed = 200;  // Set high speed
+        bodySpeed = 200; // Move the body at medium speed
+        bodyActionTime = currentTime + random(500, 1000); // Schedule body action
+        bodyMotor.forward(); // Move the body motor to raise the head
+
       } else if (r == 5) {
-        bodySpeed = 255;  // Max speed, backward movement
-        bodyMotor.backward();
+        bodySpeed = 255; // Set the body motor to full speed
+        bodyActionTime = currentTime + random(900, 1200); // Schedule body action
+        bodyMotor.backward(); // Move the body motor to raise the tail
+
       } else {
-        bodySpeed = 255;  // Max speed, forward movement
+        bodySpeed = 255; // Move the body at full speed
+        bodyActionTime = currentTime + random(1500, 3000); // Schedule action time
+        bodyMotor.forward(); // Move the body motor to raise the head
       }
-      bodyActionTime = currentTime + random(500, 3000);  // Set next body action time
-      bodyMotor.setSpeed(bodySpeed);  // Update body motor speed
-      bodyMotor.forward();  // Move body motor forward
     }
+
+    bodyMotor.setSpeed(bodySpeed); // Set the body motor speed
   } else {
-    if (currentTime > bodyActionTime) {  // No talking, halt body
-      bodyMotor.halt();
-      bodyActionTime = currentTime + random(20, 50);  // Set short idle time
+    if (currentTime > bodyActionTime) { // If we're beyond the scheduled body action time
+      bodyMotor.halt(); // Stop the body motor
+      bodyActionTime = currentTime + random(20, 50); // Set the next scheduled body action
     }
   }
 }
 
-void articulateTail(bool talking) {
-  // Control tail movement based on talking state
-  if (talking) {
-    if (currentTime > tailActionTime) {  // Time to update tail movement
-      int r = random(5);                // Randomize tail speed
-      int tailSpeed = r * 50 + 5;       // Set tail speed between 5 and 255
-      tailMotor.setSpeed(tailSpeed);    // Update tail motor speed
-      tailMotor.forward();              // Move tail motor forward
-      tailActionTime = currentTime + random(300, 1000);  // Set next tail action time
+void moveHead(bool talking) {
+  if (talking) { // If Billy is talking
+    if (currentTime > headActionTime) { // And if we don't have a scheduled head movement
+      int r = random(0, 8); // Create a random number between 0 and 7
+      if (r < 1) {
+        headSpeed = 0; // Don't move the head
+        headActionTime = currentTime + random(500, 1000); // Schedule head action
+        headMotor.forward(); // Move the head motor forward
+
+      } else if (r < 3) {
+        headSpeed = 150; // Move the head slowly
+        headActionTime = currentTime + random(500, 1000); // Schedule head action
+        headMotor.forward(); // Move the head motor forward
+
+      } else if (r == 4) {
+        headSpeed = 200; // Move the head at medium speed
+        headActionTime = currentTime + random(500, 1000); // Schedule head action
+        headMotor.forward(); // Move the head motor forward
+
+      } else if (r == 5) {
+        headSpeed = 255; // Set the head motor to full speed
+        headActionTime = currentTime + random(900, 1200); // Schedule head action
+        headMotor.backward(); // Move the head motor backward
+
+      } else {
+        headSpeed = 255; // Move the head at full speed
+        headActionTime = currentTime + random(1500, 3000); // Schedule action time
+        headMotor.forward(); // Move the head motor forward
+      }
     }
+
+    headMotor.setSpeed(headSpeed); // Set the head motor speed
   } else {
-    if (currentTime > tailActionTime) {  // No talking, halt tail
-      tailMotor.halt();
-      tailActionTime = currentTime + random(20, 50);  // Set short idle time
+    if (currentTime > headActionTime) { // If we're beyond the scheduled head action time
+      headMotor.halt(); // Stop the head motor
+      headActionTime = currentTime + random(20, 50); // Set the next scheduled head action
     }
   }
 }
 
 void flap() {
-  // Function to perform a flapping motion
-  bodyMotor.setSpeed(180);  // Set speed for body motor
-  bodyMotor.backward();     // Move body backward (flap)
-  tailMotor.setSpeed(255);  // Set speed for tail motor
-  tailMotor.forward();      // Move tail forward (flap)
-  delay(500);               // Short delay for flap effect
-  haltAllMotors();          // Stop all motors after flapping
+  // Body flap
+  bodyMotor.setSpeed(180);  // Set the body motor speed
+  bodyMotor.backward();     // Move the body motor to raise the tail
+  delay(500);               // Wait for half a second
+  bodyMotor.halt();         // Halt the body motor
+
+  // Head movement during flap (optional)
+  headMotor.setSpeed(180);  // Set the head motor speed
+  headMotor.backward();     // Move the head motor backward
+  delay(500);               // Wait for half a second
+  headMotor.halt();         // Halt the head motor
 }
 
-void haltAllMotors() {
-  // Function to halt all motors
-  bodyMotor.halt();
-  mouthMotor.halt();
-  tailMotor.halt();
+void checkSerialInput() {
+  if (Serial.available() > 0) {
+    String input = Serial.readStringUntil('\n');
+    input.trim(); // Remove any whitespace
+
+    if (input.equalsIgnoreCase("debug")) {
+      debugMode = true;
+      Serial.println("Entered Debug Mode.");
+      Serial.println("Commands:");
+      Serial.println("  test mouth_open");
+      Serial.println("  test mouth_close");
+      Serial.println("  test head_forward");
+      Serial.println("  test head_backward");
+      Serial.println("  test body_forward");
+      Serial.println("  test body_backward");
+      Serial.println("  stop all");
+      Serial.println("  exit");
+    } else if (input.equalsIgnoreCase("exit")) {
+      debugMode = false;
+      Serial.println("Exited Debug Mode.");
+    } else if (debugMode) {
+      handleDebugCommand(input);
+    }
+  }
 }
 
+void debugMenu() {
+  // In debug mode, motors are controlled via serial commands
+  // The main loop does nothing unless a command is received
+}
+
+void handleDebugCommand(String command) {
+  if (command.startsWith("test ")) {
+    String action = command.substring(5);
+
+    if (action.equalsIgnoreCase("mouth_open")) {
+      Serial.println("Testing: Mouth Open");
+      mouthMotor.setSpeed(220);
+      mouthMotor.forward();
+    } else if (action.equalsIgnoreCase("mouth_close")) {
+      Serial.println("Testing: Mouth Close");
+      mouthMotor.setSpeed(180);
+      mouthMotor.backward();
+    } else if (action.equalsIgnoreCase("head_forward")) {
+      Serial.println("Testing: Head Forward");
+      headMotor.setSpeed(200);
+      headMotor.forward();
+    } else if (action.equalsIgnoreCase("head_backward")) {
+      Serial.println("Testing: Head Backward");
+      headMotor.setSpeed(200);
+      headMotor.backward();
+    } else if (action.equalsIgnoreCase("body_forward")) {
+      Serial.println("Testing: Body Forward");
+      bodyMotor.setSpeed(200);
+      bodyMotor.forward();
+    } else if (action.equalsIgnoreCase("body_backward")) {
+      Serial.println("Testing: Body Backward");
+      bodyMotor.setSpeed(200);
+      bodyMotor.backward();
+    } else {
+      Serial.println("Unknown test command.");
+    }
+  } else if (command.equalsIgnoreCase("stop all")) {
+    Serial.println("Stopping all motors.");
+    mouthMotor.halt();
+    headMotor.halt();
+    bodyMotor.halt();
+  } else if (command.equalsIgnoreCase("exit")) {
+    debugMode = false;
+    Serial.println("Exited Debug Mode.");
+  } else {
+    Serial.println("Unknown command.");
+  }
+}
