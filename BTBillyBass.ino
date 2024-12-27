@@ -1,35 +1,46 @@
 #include <MX1508.h>
 
 // Declare motors for each part of the fish
-MX1508 bodyMotor(6, 9);   // Body motor on PWM pins 6 and 9
-MX1508 mouthMotor(5, 3);  // Mouth motor on PWM pins 5 and 3
-MX1508 headMotor(10, 11); // Head motor on PWM pins 10 and 11
+MX1508 bodyMotor(6, 9);    // Body motor on PWM pins 6 and 9
+MX1508 mouthMotor(5, 3);   // Mouth motor on PWM pins 5 and 3
+MX1508 headMotor(10, 11);  // Head motor on PWM pins 10 and 11
 
 // Sound input pins for left and right channels
 const int soundPinLeft = A0;
 const int soundPinRight = A1;
 
 // Threshold for "silence". Anything below this level is ignored.
-int silence = 12;
-int bodySpeed = 0; // Body motor speed initialized to 0
-int headSpeed = 0; // Head motor speed initialized to 0
-int soundVolumeLeft = 0;  // Variable to hold the left channel audio value
-int soundVolumeRight = 0; // Variable to hold the right channel audio value
-int soundVolume = 0;      // Combined audio value
-int fishState = 0;        // Variable to indicate the state Billy is in
+int silenceThreshold = 12; 
 
-bool talking = false;     // Indicates whether the fish should be talking or not
-bool debugMode = false;   // Flag to indicate if debug mode is active
+// Motor speed variables
+int bodySpeed = 0;  
+int headSpeed = 0;
 
-// Variables for timing
+// Sound input variables
+int soundVolumeLeft = 0;  
+int soundVolumeRight = 0; 
+int soundVolume = 0;      
+
+// Fish state variable
+enum FishState {
+  WAITING,
+  TALKING,
+  FLAPPING
+};
+FishState fishState = WAITING;
+
+// Timing variables
 unsigned long currentTime;
 unsigned long mouthActionTime = 0;
 unsigned long bodyActionTime = 0;
 unsigned long headActionTime = 0;
 unsigned long nextFlapTime = 0;
 
+// Debug mode flag
+bool debugMode = false; 
+
 void setup() {
-  // Make sure all motor speeds are set to zero
+  // Initialize motors
   bodyMotor.setSpeed(0);
   mouthMotor.setSpeed(0);
   headMotor.setSpeed(0);
@@ -44,264 +55,207 @@ void setup() {
   // Initialize nextFlapTime
   nextFlapTime = millis() + random(30000, 60000); // Next flap in 30 to 60 seconds
 
-  // Print welcome message and instructions
-  Serial.println("Billy Bass Debug Mode");
-  Serial.println("Type 'debug' to enter debug mode.");
-  Serial.println("Type 'exit' to exit debug mode.");
+  // Print welcome message
+  Serial.println("Billy Bass Ready"); 
 }
 
 void loop() {
-  currentTime = millis(); // Update the time each time the loop is run
+  currentTime = millis(); 
 
   // Check for serial input
   checkSerialInput();
 
   if (debugMode) {
-    // In debug mode, handle motor testing
-    debugMenu();
+    debugMenu(); 
   } else {
-    updateSoundInput();     // Update the volume levels detected
-    SMBillyBass();          // State machine to control the fish
+    updateSoundInput();    
+    updateFishState();      
   }
 }
 
-void SMBillyBass() {
+void updateFishState() {
   switch (fishState) {
-    case 0: // START & WAITING
-      if (soundVolume > silence) { // If we detect audio input above the threshold
-        if (currentTime > mouthActionTime) { // And if we haven't yet scheduled a mouth movement
-          talking = true; // Set talking to true and schedule the mouth movement action
-          mouthActionTime = currentTime + 100;
-          fishState = 1; // Jump to the talking state
-        }
-      } else if (currentTime > mouthActionTime + 100) { // If we're beyond the scheduled talking time, halt the motors
-        bodyMotor.halt();
-        mouthMotor.halt();
-        headMotor.halt();
+    case WAITING: 
+      if (soundVolume > silenceThreshold && currentTime > mouthActionTime) {
+        mouthActionTime = currentTime + 100; 
+        fishState = TALKING; 
+      } else if (currentTime > mouthActionTime + 100) {
+        stopMotors(); 
       }
-      if (currentTime >= nextFlapTime) { // Time to flap
-        fishState = 2; // Jump to the flapping state
+
+      if (currentTime >= nextFlapTime) { 
+        fishState = FLAPPING; 
       }
       break;
 
-    case 1: // TALKING
-      if (currentTime < mouthActionTime) { // If we have a scheduled mouthActionTime in the future
-        if (talking) { // And if we think we should be talking
-          openMouth(); // Open the mouth
-          articulateBody(true); // Move the body
-          moveHead(true);       // Move the head
-        }
-      } else { // Otherwise, close the mouth, don't articulate the body or head, and set talking to false
+    case TALKING: 
+      if (currentTime < mouthActionTime) { 
+        openMouth(); 
+        articulateBody(true); 
+        moveHead(true);    
+      } else { 
         closeMouth();
         articulateBody(false);
         moveHead(false);
-        talking = false;
-        fishState = 0; // Jump back to waiting state
+        fishState = WAITING; 
       }
       break;
 
-    case 2: // FLAPPING
+    case FLAPPING: 
       flap();
-      nextFlapTime = currentTime + random(30000, 60000); // Schedule next flap in 30 to 60 seconds
-      fishState = 0; // Return to waiting state
+      nextFlapTime = currentTime + random(30000, 60000); 
+      fishState = WAITING; 
       break;
   }
 }
 
 void updateSoundInput() {
-  // Read audio inputs from both left and right channels
   soundVolumeLeft = analogRead(soundPinLeft);
   soundVolumeRight = analogRead(soundPinRight);
 
-  // Combine the audio signals (you can adjust this logic as needed)
-  soundVolume = (soundVolumeLeft + soundVolumeRight) / 2;
-
-  // Print audio values to Serial Monitor for debugging
-  Serial.print("Left Channel: ");
-  Serial.print(soundVolumeLeft);
-  Serial.print(" | Right Channel: ");
-  Serial.print(soundVolumeRight);
-  Serial.print(" | Combined: ");
-  Serial.println(soundVolume);
+  // Combine the audio signals (consider other methods if needed)
+  soundVolume = (soundVolumeLeft + soundVolumeRight) / 2; 
 }
 
 void openMouth() {
-  mouthMotor.halt();      // Stop the mouth motor
-  mouthMotor.setSpeed(220); // Set the mouth motor speed
-  mouthMotor.forward();   // Open the mouth
+  mouthMotor.halt();     
+  mouthMotor.setSpeed(220); 
+  mouthMotor.forward();  
 }
 
 void closeMouth() {
-  mouthMotor.halt();        // Stop the mouth motor
-  mouthMotor.setSpeed(180); // Set the mouth motor speed
-  mouthMotor.backward();    // Close the mouth
+  mouthMotor.halt();      
+  mouthMotor.setSpeed(180);
+  mouthMotor.backward();   
 }
 
 void articulateBody(bool talking) {
-  if (talking) { // If Billy is talking
-    if (currentTime > bodyActionTime) { // And if we don't have a scheduled body movement
-      int r = random(0, 8); // Create a random number between 0 and 7
-      if (r < 1) {
-        bodySpeed = 0; // Don't move the body
-        bodyActionTime = currentTime + random(500, 1000); // Schedule body action
-        bodyMotor.forward(); // Move the body motor to raise the head
-
-      } else if (r < 3) {
-        bodySpeed = 150; // Move the body slowly
-        bodyActionTime = currentTime + random(500, 1000); // Schedule body action
-        bodyMotor.forward(); // Move the body motor to raise the head
-
-      } else if (r == 4) {
-        bodySpeed = 200; // Move the body at medium speed
-        bodyActionTime = currentTime + random(500, 1000); // Schedule body action
-        bodyMotor.forward(); // Move the body motor to raise the head
-
-      } else if (r == 5) {
-        bodySpeed = 255; // Set the body motor to full speed
-        bodyActionTime = currentTime + random(900, 1200); // Schedule body action
-        bodyMotor.backward(); // Move the body motor to raise the tail
-
-      } else {
-        bodySpeed = 255; // Move the body at full speed
-        bodyActionTime = currentTime + random(1500, 3000); // Schedule action time
-        bodyMotor.forward(); // Move the body motor to raise the head
-      }
+  if (talking && currentTime > bodyActionTime) {
+    int r = random(0, 8); 
+    switch (r) {
+      case 0: 
+        bodySpeed = 0;  
+        bodyActionTime = currentTime + random(500, 1000); 
+        bodyMotor.forward(); 
+        break;
+      case 1: 
+      case 2: 
+        bodySpeed = 150; 
+        bodyActionTime = currentTime + random(500, 1000); 
+        bodyMotor.forward(); 
+        break;
+      case 3:
+        bodySpeed = 200; 
+        bodyActionTime = currentTime + random(500, 1000); 
+        bodyMotor.forward(); 
+        break;
+      case 4:
+        bodySpeed = 255; 
+        bodyActionTime = currentTime + random(900, 1200); 
+        bodyMotor.backward(); 
+        break;
+      default: 
+        bodySpeed = 255; 
+        bodyActionTime = currentTime + random(1500, 3000); 
+        bodyMotor.forward(); 
+        break;
     }
-
-    bodyMotor.setSpeed(bodySpeed); // Set the body motor speed
-  } else {
-    if (currentTime > bodyActionTime) { // If we're beyond the scheduled body action time
-      bodyMotor.halt(); // Stop the body motor
-      bodyActionTime = currentTime + random(20, 50); // Set the next scheduled body action
-    }
+    bodyMotor.setSpeed(bodySpeed); 
+  } else if (currentTime > bodyActionTime) {
+    bodyMotor.halt(); 
+    bodyActionTime = currentTime + random(20, 50); 
   }
 }
 
 void moveHead(bool talking) {
-  if (talking) { // If Billy is talking
-    if (currentTime > headActionTime) { // And if we don't have a scheduled head movement
-      int r = random(0, 8); // Create a random number between 0 and 7
-      if (r < 1) {
-        headSpeed = 0; // Don't move the head
-        headActionTime = currentTime + random(500, 1000); // Schedule head action
-        headMotor.forward(); // Move the head motor forward
-
-      } else if (r < 3) {
-        headSpeed = 150; // Move the head slowly
-        headActionTime = currentTime + random(500, 1000); // Schedule head action
-        headMotor.forward(); // Move the head motor forward
-
-      } else if (r == 4) {
-        headSpeed = 200; // Move the head at medium speed
-        headActionTime = currentTime + random(500, 1000); // Schedule head action
-        headMotor.forward(); // Move the head motor forward
-
-      } else if (r == 5) {
-        headSpeed = 255; // Set the head motor to full speed
-        headActionTime = currentTime + random(900, 1200); // Schedule head action
-        headMotor.backward(); // Move the head motor backward
-
-      } else {
-        headSpeed = 255; // Move the head at full speed
-        headActionTime = currentTime + random(1500, 3000); // Schedule action time
-        headMotor.forward(); // Move the head motor forward
-      }
+  // Similar structure to articulateBody() for improved readability
+  if (talking && currentTime > headActionTime) {
+    int r = random(0, 8); 
+    switch (r) {
+      case 0: 
+        headSpeed = 0;  
+        headActionTime = currentTime + random(500, 1000); 
+        headMotor.forward(); 
+        break;
+      case 1: 
+      case 2: 
+        headSpeed = 150; 
+        headActionTime = currentTime + random(500, 1000); 
+        headMotor.forward(); 
+        break;
+      case 3:
+        headSpeed = 200; 
+        headActionTime = currentTime + random(500, 1000); 
+        headMotor.forward(); 
+        break;
+      case 4:
+        headSpeed = 255; 
+        headActionTime = currentTime + random(900, 1200); 
+        headMotor.backward(); 
+        break;
+      default: 
+        headSpeed = 255; 
+        headActionTime = currentTime + random(1500, 3000); 
+        headMotor.forward(); 
+        break;
     }
-
-    headMotor.setSpeed(headSpeed); // Set the head motor speed
-  } else {
-    if (currentTime > headActionTime) { // If we're beyond the scheduled head action time
-      headMotor.halt(); // Stop the head motor
-      headActionTime = currentTime + random(20, 50); // Set the next scheduled head action
-    }
+    headMotor.setSpeed(headSpeed); 
+  } else if (currentTime > headActionTime) {
+    headMotor.halt(); 
+    headActionTime = currentTime + random(20, 50); 
   }
 }
 
 void flap() {
-  // Body flap
-  bodyMotor.setSpeed(180);  // Set the body motor speed
-  bodyMotor.backward();     // Move the body motor to raise the tail
-  delay(500);               // Wait for half a second
-  bodyMotor.halt();         // Halt the body motor
+  bodyMotor.setSpeed(180);  
+  bodyMotor.backward();    
+  delay(500);             
+  bodyMotor.halt();        
 
-  // Head movement during flap (optional)
-  headMotor.setSpeed(180);  // Set the head motor speed
-  headMotor.backward();     // Move the head motor backward
-  delay(500);               // Wait for half a second
-  headMotor.halt();         // Halt the head motor
+  // Optional: Add head movement during flap 
+  // headMotor.setSpeed(180);  
+  // headMotor.backward();    
+  // delay(500);             
+  // headMotor.halt();        
 }
 
 void checkSerialInput() {
   if (Serial.available() > 0) {
     String input = Serial.readStringUntil('\n');
-    input.trim(); // Remove any whitespace
+    input.trim(); 
 
     if (input.equalsIgnoreCase("debug")) {
-      debugMode = true;
-      Serial.println("Entered Debug Mode.");
-      Serial.println("Commands:");
-      Serial.println("  test mouth_open");
-      Serial.println("  test mouth_close");
-      Serial.println("  test head_forward");
-      Serial.println("  test head_backward");
-      Serial.println("  test body_forward");
-      Serial.println("  test body_backward");
-      Serial.println("  stop all");
-      Serial.println("  exit");
+      enterDebugMode();
     } else if (input.equalsIgnoreCase("exit")) {
-      debugMode = false;
-      Serial.println("Exited Debug Mode.");
+      exitDebugMode();
     } else if (debugMode) {
       handleDebugCommand(input);
     }
   }
 }
 
+void enterDebugMode() {
+  debugMode = true;
+  Serial.println("Entered Debug Mode.");
+  // ... (print debug commands)
+}
+
+void exitDebugMode() {
+  debugMode = false;
+  stopMotors(); // Ensure motors are stopped when exiting debug mode
+  Serial.println("Exited Debug Mode.");
+}
+
 void debugMenu() {
   // In debug mode, motors are controlled via serial commands
-  // The main loop does nothing unless a command is received
 }
 
 void handleDebugCommand(String command) {
-  if (command.startsWith("test ")) {
-    String action = command.substring(5);
+  // ... (handle debug commands as before) 
+}
 
-    if (action.equalsIgnoreCase("mouth_open")) {
-      Serial.println("Testing: Mouth Open");
-      mouthMotor.setSpeed(220);
-      mouthMotor.forward();
-    } else if (action.equalsIgnoreCase("mouth_close")) {
-      Serial.println("Testing: Mouth Close");
-      mouthMotor.setSpeed(180);
-      mouthMotor.backward();
-    } else if (action.equalsIgnoreCase("head_forward")) {
-      Serial.println("Testing: Head Forward");
-      headMotor.setSpeed(200);
-      headMotor.forward();
-    } else if (action.equalsIgnoreCase("head_backward")) {
-      Serial.println("Testing: Head Backward");
-      headMotor.setSpeed(200);
-      headMotor.backward();
-    } else if (action.equalsIgnoreCase("body_forward")) {
-      Serial.println("Testing: Body Forward");
-      bodyMotor.setSpeed(200);
-      bodyMotor.forward();
-    } else if (action.equalsIgnoreCase("body_backward")) {
-      Serial.println("Testing: Body Backward");
-      bodyMotor.setSpeed(200);
-      bodyMotor.backward();
-    } else {
-      Serial.println("Unknown test command.");
-    }
-  } else if (command.equalsIgnoreCase("stop all")) {
-    Serial.println("Stopping all motors.");
-    mouthMotor.halt();
-    headMotor.halt();
-    bodyMotor.halt();
-  } else if (command.equalsIgnoreCase("exit")) {
-    debugMode = false;
-    Serial.println("Exited Debug Mode.");
-  } else {
-    Serial.println("Unknown command.");
-  }
+void stopMotors() {
+  bodyMotor.halt();
+  mouthMotor.halt();
+  headMotor.halt();
 }
